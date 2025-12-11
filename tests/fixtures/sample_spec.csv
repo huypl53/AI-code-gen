@@ -1,0 +1,12 @@
+feature_name,description,priority,type,acceptance_criteria
+User Registration,"Users can create an account with email and password",must,feature,"Registration form with email/password;Email validation;Password strength requirements;Success confirmation"
+User Login,"Users can login with their credentials",must,feature,"Login form;Remember me option;Error handling for invalid credentials;Redirect after login"
+User Logout,"Users can logout from their account",must,feature,"Logout button in header;Session cleared on logout;Redirect to home"
+Dashboard,"Main dashboard showing user statistics",should,feature,"Welcome message;Task statistics;Recent activity"
+Create Task,"Users can create new tasks",must,feature,"Task form with title;Optional description;Save and cancel buttons"
+Edit Task,"Users can modify existing tasks",must,feature,"Edit button on task;Pre-filled form;Update confirmation"
+Delete Task,"Users can remove tasks",must,feature,"Delete button;Confirmation dialog;Success message"
+Complete Task,"Users can mark tasks as done",must,feature,"Checkbox on each task;Visual distinction for completed;Toggle functionality"
+Filter Tasks,"Users can filter tasks by status",should,feature,"All/Active/Completed tabs;URL reflects filter;Count badges"
+Search Tasks,"Users can search through tasks",could,feature,"Search input;Real-time filtering;No results state"
+Dark Mode,"Users can switch to dark theme",could,feature,"Theme toggle;Persisted preference;System preference detection"
