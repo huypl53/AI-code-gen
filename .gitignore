@@ -87,6 +87,10 @@ temp/
 output/
 generated/
 
+# Debug output
+.debug/
+
 # UV
 .uv/
 uv.lock
+Session.vim

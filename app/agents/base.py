@@ -52,7 +52,7 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
     @property
     def model(self) -> str:
         """Model to use for this agent."""
-        return "sonnet"
+        return "claude-sonnet-4-5-20250929"
 
     def _validate_config(self) -> None:
         """Validate that required configuration is present."""

@@ -81,7 +81,7 @@ class DevopsAgent(BaseAgent[DevopsAgentInput, DevopsAgentOutput]):
 
     @property
     def model(self) -> str:
-        return "sonnet"
+        return "claude-sonnet-4-5-20250929"
 
     async def execute(self, input_data: DevopsAgentInput) -> DevopsAgentOutput:
         """Execute deployment to Vercel."""
@@ -107,6 +107,9 @@ class DevopsAgent(BaseAgent[DevopsAgentInput, DevopsAgentOutput]):
                 ),
                 success=False,
             )
+
+        # Ensure vercel.json exists for reliable deployment
+        self._ensure_vercel_config(project_dir)
 
         # Use mock deployment for demos (real Vercel deployment when vercel_deploy_real=True)
         if settings.vercel_deploy_real and settings.vercel_token:
@@ -169,6 +172,64 @@ class DevopsAgent(BaseAgent[DevopsAgentInput, DevopsAgentOutput]):
             return f"Invalid package.json: {e}"
 
         return None
+
+    def _ensure_vercel_config(self, project_dir: Path) -> None:
+        """Ensure vercel.json exists with proper configuration.
+
+        This prevents framework detection issues and ensures consistent deployments.
+        """
+        vercel_json = project_dir / "vercel.json"
+
+        # Skip if vercel.json already exists
+        if vercel_json.exists():
+            self.logger.info("devops_agent.vercel_config_exists", path=str(vercel_json))
+            return
+
+        # Detect framework from package.json
+        package_json = project_dir / "package.json"
+        framework = "nextjs"  # default
+
+        if package_json.exists():
+            try:
+                with open(package_json) as f:
+                    package = json.load(f)
+                    deps = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
+
+                    if "next" in deps:
+                        framework = "nextjs"
+                    elif "vite" in deps:
+                        framework = "vite"
+                    elif "react-scripts" in deps:
+                        framework = "create-react-app"
+            except json.JSONDecodeError:
+                pass
+
+        # Create vercel.json with framework-specific settings
+        vercel_config: dict[str, Any] = {
+            "version": 2,
+            "framework": framework,
+        }
+
+        # Add framework-specific build settings
+        if framework == "nextjs":
+            vercel_config["buildCommand"] = "npm run build"
+            vercel_config["outputDirectory"] = ".next"
+        elif framework == "vite":
+            vercel_config["buildCommand"] = "npm run build"
+            vercel_config["outputDirectory"] = "dist"
+        elif framework == "create-react-app":
+            vercel_config["buildCommand"] = "npm run build"
+            vercel_config["outputDirectory"] = "build"
+
+        # Write vercel.json
+        with open(vercel_json, "w") as f:
+            json.dump(vercel_config, f, indent=2)
+
+        self.logger.info(
+            "devops_agent.vercel_config_created",
+            framework=framework,
+            path=str(vercel_json),
+        )
 
     async def _deploy_to_vercel(
         self, input_data: DevopsAgentInput, project_dir: Path
@@ -236,18 +297,21 @@ class DevopsAgent(BaseAgent[DevopsAgentInput, DevopsAgentOutput]):
             )
 
             if process.returncode != 0:
-                # Log first 500 chars of error for debugging
-                error_preview = stderr_text[:500] if stderr_text else stdout_text[:500]
+                # Capture more error info for debugging
+                combined_output = f"STDERR:\n{stderr_text}\n\nSTDOUT:\n{stdout_text}"
+                error_preview = combined_output[:2000]
                 self.logger.error(
                     "devops_agent.deploy_failed",
-                    error_preview=error_preview,
+                    returncode=process.returncode,
+                    error_preview=error_preview[:500],
                 )
                 return DeploymentResult(
                     success=False,
-                    error=error_preview or "Unknown deployment error",
+                    error=f"Deployment failed (exit code {process.returncode}): {error_preview[:1500]}",
                     error_details={
-                        "stderr": stderr_text[:1000] if stderr_text else None,
-                        "stdout": stdout_text[:1000] if stdout_text else None,
+                        "stderr": stderr_text[:2000] if stderr_text else None,
+                        "stdout": stdout_text[:2000] if stdout_text else None,
+                        "returncode": process.returncode,
                     },
                 )
 
@@ -266,9 +330,16 @@ class DevopsAgent(BaseAgent[DevopsAgentInput, DevopsAgentOutput]):
             )
 
         except asyncio.TimeoutError:
+            self.logger.error("devops_agent.timeout", timeout_seconds=300)
             return DeploymentResult(
                 success=False,
-                error="Deployment timed out after 5 minutes",
+                error="Deployment timed out after 5 minutes. The Vercel deployment may still be in progress - check your Vercel dashboard.",
+            )
+        except asyncio.CancelledError:
+            self.logger.warning("devops_agent.cancelled", reason="Task was cancelled (server shutdown or restart)")
+            return DeploymentResult(
+                success=False,
+                error="Deployment was cancelled. This usually happens when the server restarts. Please try again.",
             )
         except Exception as e:
             self.logger.exception("devops_agent.deploy_exception")

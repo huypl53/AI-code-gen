@@ -96,7 +96,7 @@ Always output valid JSON matching the StructuredSpec schema.
 
     @property
     def model(self) -> str:
-        return "sonnet"
+        return "claude-sonnet-4-5-20250929"
 
     async def execute(self, input_data: SpecAnalysisInput) -> SpecAnalysisOutput:
         """Execute specification analysis.
@@ -346,9 +346,13 @@ Always output valid JSON matching the StructuredSpec schema.
 
             self.logger.info("spec_analysis.enhancing_with_ai")
 
+            from app.config import settings
+            
             options = ClaudeAgentOptions(
                 system_prompt=self.system_prompt,
                 permission_mode="plan",  # Read-only mode
+                # Pass API key as environment variable for authentication
+                env={"ANTHROPIC_API_KEY": settings.anthropic_api_key} if settings.anthropic_api_key else {},
             )
 
             prompt = f"""Analyze this specification and enhance the structured output.

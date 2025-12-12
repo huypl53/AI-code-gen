@@ -50,14 +50,17 @@ VERCEL_TOKEN=your-vercel-token
 ### Run the Server
 
 ```bash
-# Development mode
-uv run uvicorn app.main:app --reload
+# Development mode (uses port from .env or default 8000)
+uv run python -m app.main
+
+# Or with explicit port
+uv run uvicorn app.main:app --reload --port 8090
 
 # Or use the script
 ./scripts/dev.sh
 ```
 
-The API will be available at `http://localhost:8000`.
+The API will be available at `http://localhost:{API_PORT}` (default: 8000).
 
 ## API Usage
 
