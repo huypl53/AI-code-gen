@@ -14,7 +14,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY pyproject.toml README.md uv.lock ./
+COPY pyproject.toml README.md ./
 COPY app ./app
 RUN pip install --upgrade pip && \
     pip install .
