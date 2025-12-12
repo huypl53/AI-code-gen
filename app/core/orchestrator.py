@@ -23,6 +23,11 @@ from app.models.spec import StructuredSpec
 from app.utils.debug import save_pre_codegen_debug
 from app.utils.logging import get_logger
 
+from langsmith.integrations.claude_agent_sdk import configure_claude_agent_sdk
+
+# Setup claude_agent_sdk with langsmith tracing
+configure_claude_agent_sdk()
+
 # Maximum number of build fix attempts
 MAX_BUILD_FIX_ATTEMPTS = 3
 

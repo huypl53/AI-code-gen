@@ -8,24 +8,20 @@ dependencies = [
     # Web Framework
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.27.0",
-    
     # Validation & Settings
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
-    
     # HTTP Client
     "httpx>=0.26.0",
-    
     # AI Agent SDK
     "claude-agent-sdk>=0.1.0",
-    
     # Logging
     "structlog>=24.1.0",
-    
     # Utilities
     "python-multipart>=0.0.6",
     "sse-starlette>=2.0.0",
     "python-dotenv>=1.0.0",
+    "langsmith[claude-agent-sdk]>=0.4.59",
 ]
 
 [project.optional-dependencies]
@@ -87,3 +83,9 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["claude_agent_sdk.*", "sse_starlette.*"]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "langsmith[claude-agent-sdk]>=0.4.59",
+    "pytest>=9.0.2",
+]
