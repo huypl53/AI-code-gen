@@ -62,6 +62,18 @@ uv run uvicorn app.main:app --reload --port 8090
 
 The API will be available at `http://localhost:{API_PORT}` (default: 8000).
 
+### Docker Compose
+
+```bash
+# Copy and configure environment
+cp .env.example .env
+
+# Build and start the stack
+docker compose up --build
+```
+
+This exposes the API on `http://localhost:${API_PORT:-8000}` and includes a container health check that pings `/v1/health`.
+
 ## API Usage
 
 ### Create a Project
