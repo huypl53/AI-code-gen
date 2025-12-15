@@ -1,6 +1,7 @@
 """Project management endpoints."""
 
 import asyncio
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -9,9 +10,11 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import EventsDep, ProjectDep, SessionDep
+from app.config import settings
 from app.core.events import Event
 from app.models.project import (
     ClarificationQuestion,
+    PhaseStatus,
     Project,
     ProjectCreate,
     ProjectResponse,
@@ -63,6 +66,50 @@ async def run_pipeline_background(project_id: UUID) -> None:
         pass
 
 
+async def run_mock_pipeline(
+    project_id: UUID,
+    session: SessionDep,
+    events: EventsDep,
+) -> None:
+    """Simulate pipeline without calling external services."""
+    mock_url = settings.mock_deployed_app
+    if not mock_url:
+        return
+
+    project = await session.get_project(project_id)
+    if not project:
+        return
+
+    phases = [
+        ("spec_analysis", ProjectStatus.ANALYZING),
+        ("code_generation", ProjectStatus.GENERATING),
+        ("deployment", ProjectStatus.DEPLOYING),
+    ]
+
+    for phase, status in phases:
+        project.update_phase(phase, PhaseStatus.IN_PROGRESS, metadata={"mock": True})
+        project.status = status
+        await session.update_project(project)
+        await events.publish_phase_started(project.id, phase)
+
+        await asyncio.sleep(0.1)
+
+        project.update_phase(phase, PhaseStatus.COMPLETED, metadata={"mock": True})
+        await session.update_project(project)
+        await events.publish_phase_completed(
+            project.id, phase, project.phases[phase].duration_ms or 0
+        )
+
+    project.deployment_result = {
+        "url": mock_url,
+        "deployment_id": "mock-deployment",
+    }
+    project.status = ProjectStatus.DEPLOYED
+    project.completed_at = datetime.utcnow()
+    await session.update_project(project)
+    await events.publish_deployment_complete(project.id, mock_url)
+
+
 @router.post(
     "",
     response_model=ProjectResponse,
@@ -85,7 +132,10 @@ async def create_project(
     await session.update_project(project)
 
     # Start the pipeline in background
-    background_tasks.add_task(run_pipeline_background, project.id)
+    if settings.mock_deployed_app:
+        background_tasks.add_task(run_mock_pipeline, project.id, session, events)
+    else:
+        background_tasks.add_task(run_pipeline_background, project.id)
 
     return ProjectResponse.from_project(project)
 

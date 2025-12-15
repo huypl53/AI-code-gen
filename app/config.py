@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["console", "json"] = "console"
 
+    # Mocking / local demos
+    mock_deployed_app: str | None = None  # If set, pipeline returns this URL without hitting external APIs
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
