@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -21,6 +22,9 @@ from app.models.project import (
     ProjectResponse,
     ProjectStatus,
 )
+from app.utils.logging import get_logger
+
+logger = get_logger()
 
 router = APIRouter()
 

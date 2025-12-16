@@ -6,7 +6,7 @@ questions, and produces structured specification output.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.agents.base import BaseAgent
 from app.config import settings
@@ -480,6 +480,17 @@ Quality standards:
         
         return normalized
 
+    def _format_validation_errors(self, validation_error: ValidationError) -> str:
+        """Format Pydantic validation errors into a clear string for Claude to fix."""
+        errors = []
+        for error in validation_error.errors():
+            loc = " -> ".join(str(x) for x in error["loc"])
+            msg = error["msg"]
+            error_type = error["type"]
+            errors.append(f"  - Field: {loc}\n    Error: {msg}\n    Type: {error_type}")
+
+        return "\n".join(errors)
+
     async def _enhance_with_claude(
         self,
         input_data: SpecAnalysisInput,
@@ -487,18 +498,22 @@ Quality standards:
     ) -> StructuredSpec | None:
         """Use Claude to enhance the specification analysis."""
         try:
-            from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, AssistantMessage, TextBlock
-            import json
+            from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, AssistantMessage
 
             self.logger.info("spec_analysis.enhancing_with_ai")
 
             from app.config import settings
-            
+
             options = ClaudeAgentOptions(
                 system_prompt=self.system_prompt,
                 permission_mode="plan",  # Read-only mode
                 # Pass API key as environment variable for authentication
                 env={"ANTHROPIC_API_KEY": settings.anthropic_api_key} if settings.anthropic_api_key else {},
+                # Use structured output to get validated StructuredSpec directly
+                output_format={
+                    "type": "json_schema",
+                    "schema": StructuredSpec.model_json_schema()
+                }
             )
 
             prompt = f"""Analyze this specification and enhance the structured output.
@@ -530,47 +545,83 @@ Each feature MUST have:
   - Use "could" for nice-to-have features
   - Use "wont" for future/deferred features
 
-Respond with ONLY a valid JSON object matching the StructuredSpec schema.
+Your response will automatically be validated against the StructuredSpec schema.
 """
 
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
+                max_retries = 2
+                current_prompt = prompt
 
-                response_text = ""
-                async for message in client.receive_response():
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                response_text += block.text
+                for retry_count in range(max_retries + 1):
+                    await client.query(current_prompt)
 
-                # Try to parse JSON from response
-                if response_text:
-                    # Extract JSON from response (may be wrapped in markdown)
-                    json_match = response_text
-                    if "```json" in response_text:
-                        start = response_text.find("```json") + 7
-                        end = response_text.find("```", start)
-                        json_match = response_text[start:end]
-                    elif "```" in response_text:
-                        start = response_text.find("```") + 3
-                        end = response_text.find("```", start)
-                        json_match = response_text[start:end]
+                    # Collect structured output from the response
+                    async for message in client.receive_response():
+                        if isinstance(message, AssistantMessage):
+                            # Check if the message has structured output
+                            if hasattr(message, 'structured_output') and message.structured_output:
+                                try:
+                                    # Validate and normalize the structured output
+                                    enhanced_data = message.structured_output
 
-                    try:
-                        enhanced_data = json.loads(json_match.strip())
-                        
-                        # Normalize features to match our schema
-                        if "features" in enhanced_data and enhanced_data["features"]:
-                            enhanced_data["features"] = self._normalize_ai_features(
-                                enhanced_data["features"]
-                            )
-                        
-                        return StructuredSpec(**enhanced_data)
-                    except (json.JSONDecodeError, ValueError) as e:
-                        self.logger.warning(
-                            "spec_analysis.ai_enhancement_parse_failed",
-                            error=str(e),
-                        )
+                                    # Normalize features to match our schema
+                                    if "features" in enhanced_data and enhanced_data["features"]:
+                                        enhanced_data["features"] = self._normalize_ai_features(
+                                            enhanced_data["features"]
+                                        )
+
+                                    # Validate with Pydantic
+                                    return StructuredSpec.model_validate(enhanced_data)
+
+                                except ValidationError as e:
+                                    if retry_count < max_retries:
+                                        # Format validation errors and ask Claude to fix them
+                                        error_details = self._format_validation_errors(e)
+                                        self.logger.warning(
+                                            "spec_analysis.validation_failed",
+                                            retry=retry_count + 1,
+                                            errors=error_details,
+                                        )
+
+                                        current_prompt = f"""The previous response had validation errors. Please fix these specific issues:
+
+## Validation Errors
+{error_details}
+
+## Required Schema
+The response must match the StructuredSpec schema with these requirements:
+- project_name: string (required)
+- description: string (required)
+- features: array of Feature objects (optional, default: [])
+  - Each feature needs: id (string), name (string), description (string), priority ("must"|"should"|"could"|"wont")
+- data_models: array of DataModel objects (optional, default: [])
+- api_endpoints: array of APIEndpoint objects (optional, default: [])
+  - Each endpoint needs: method ("GET"|"POST"|"PUT"|"PATCH"|"DELETE"), path (string), description (string)
+- ui_components: array of UIComponent objects (optional, default: [])
+  - Each component needs: name (string), type ("page"|"layout"|"component"|"modal"|"form"), description (string)
+- assumptions: array of strings (optional, default: [])
+- tech_recommendations: TechRecommendations object (optional, has defaults)
+- estimated_complexity: "simple"|"medium"|"complex" (optional, default: "medium")
+
+Please provide a valid response that fixes the validation errors above.
+"""
+                                        # Break inner loop to retry with new prompt
+                                        break
+                                    else:
+                                        self.logger.warning(
+                                            "spec_analysis.validation_failed_max_retries",
+                                            error=str(e),
+                                        )
+                                        return None
+
+                                except Exception as e:
+                                    self.logger.warning(
+                                        "spec_analysis.structured_output_error",
+                                        error=str(e),
+                                    )
+                                    if retry_count >= max_retries:
+                                        return None
+                                    break
 
         except ImportError:
             self.logger.warning("claude-agent-sdk not available")
