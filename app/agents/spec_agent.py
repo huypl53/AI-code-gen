@@ -437,11 +437,13 @@ Quality standards:
     def _should_enhance_with_ai(self, spec: StructuredSpec) -> bool:
         """Determine if we should use Claude to enhance the analysis."""
         # Enhance if we have limited structured data
-        return (
-            len(spec.features) < 3
-            or len(spec.data_models) == 0
-            or len(spec.api_endpoints) == 0
-        )
+        return True
+
+        # return (
+        #     len(spec.features) < 3
+        #     or len(spec.data_models) == 0
+        #     or len(spec.api_endpoints) == 0
+        # )
 
     def _normalize_ai_features(self, features_data: list[dict]) -> list[dict]:
         """Normalize AI-generated features to match our schema."""
