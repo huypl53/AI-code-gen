@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
 from app.config import settings
+from app.models.estimation import EstimationResult, EstimationRow
 from app.models.project import ClarificationQuestion
 from app.models.spec import (
     APIEndpoint,
@@ -19,6 +20,7 @@ from app.models.spec import (
     TechRecommendations,
     UIComponent,
 )
+from app.models.template import SpecTemplate
 from app.parsers.csv import parse_csv_spec
 from app.parsers.markdown import parse_markdown_spec
 
@@ -26,9 +28,10 @@ from app.parsers.markdown import parse_markdown_spec
 class SpecAnalysisInput(BaseModel):
     """Input for specification analysis."""
 
-    spec_format: Literal["markdown", "csv"]
+    spec_format: Literal["markdown", "csv", "text"]
     spec_content: str
     project_name: str
+    template: SpecTemplate | None = None
     context: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -36,6 +39,7 @@ class SpecAnalysisOutput(BaseModel):
     """Output from specification analysis."""
 
     structured_spec: StructuredSpec
+    estimation: EstimationResult | None = None
     clarification_questions: list[ClarificationQuestion] = Field(default_factory=list)
     needs_clarification: bool = False
 
@@ -64,30 +68,28 @@ class SpecAnalysisAgent(BaseAgent[SpecAnalysisInput, SpecAnalysisOutput]):
 
     @property
     def system_prompt(self) -> str:
-        return """You are a senior software architect specializing in requirements analysis.
+        return """You are a project manager and solution architect.
 
-Your task is to analyze user specifications and produce a structured output.
+Your job is to study client requirements, mirror the breakdown style of an existing CSV estimation template, and produce two things:
+1) A clear developer-ready structured specification (features, data models, APIs, UI).
+2) A task and effort breakdown with hour estimates for each feature/module, staying consistent with the template style when provided.
 
-## Input Formats
-- **Markdown**: Feature lists, user stories, descriptions
-- **CSV**: Structured data with columns for features, requirements, etc.
+Input formats:
+- Markdown or plain text requests from clients.
+- CSV templates that demonstrate how effort is grouped and estimated.
 
-## Analysis Process
-1. Parse the input format correctly
-2. Extract all explicit requirements
-3. Identify implicit requirements
-4. Detect ambiguities or missing information
-5. Generate clarifying questions if needed
-6. Produce structured specification JSON
+Process:
+- Parse the input specification and extract explicit/implicit requirements.
+- Use the provided template (when available) as a guide for structure, naming, and effort sizing.
+- Identify ambiguities and propose clarifying questions that unblock delivery.
+- Produce MoSCoW-prioritized features with acceptance criteria.
+- Create an estimation breakdown with realistic hours, QA/PM overhead, and buffer.
 
-## Output Format
-Always output valid JSON matching the StructuredSpec schema.
-
-## Quality Standards
-- Every feature must have acceptance criteria
-- API endpoints must have request/response schemas
-- Data models must define all fields and relationships
-- UI components must specify layout and interactions
+Quality standards:
+- Every feature has acceptance criteria and clear ownership.
+- API endpoints list methods, paths, and request/response essentials.
+- Data models define fields and relationships.
+- Estimation rows are concrete, actionable tasks a dev team can execute.
 """
 
     @property
@@ -112,7 +114,7 @@ Always output valid JSON matching the StructuredSpec schema.
         )
 
         # Parse the specification
-        if input_data.spec_format == "markdown":
+        if input_data.spec_format in ("markdown", "text"):
             parsed = parse_markdown_spec(input_data.spec_content)
             features = parsed.features
             data_models = parsed.data_models
@@ -126,14 +128,6 @@ Always output valid JSON matching the StructuredSpec schema.
             api_endpoints = []
             ui_components = []
             description = f"{input_data.project_name} application"
-
-        # Generate clarification questions based on analysis
-        clarification_questions = self._identify_gaps(
-            features=features,
-            data_models=data_models,
-            api_endpoints=api_endpoints,
-            ui_components=ui_components,
-        )
 
         # Determine complexity
         complexity = self._estimate_complexity(
@@ -165,16 +159,48 @@ Always output valid JSON matching the StructuredSpec schema.
             if enhanced:
                 structured_spec = enhanced
 
+        # Rehydrate from final structured spec
+        features = structured_spec.features
+        data_models = structured_spec.data_models
+        api_endpoints = structured_spec.api_endpoints
+        ui_components = structured_spec.ui_components
+        structured_spec.estimated_complexity = self._estimate_complexity(
+            features=features,
+            data_models=data_models,
+            api_endpoints=api_endpoints,
+        )
+
+        # Generate clarification questions based on analysis
+        clarification_questions = self._identify_gaps(
+            features=features,
+            data_models=data_models,
+            api_endpoints=api_endpoints,
+            ui_components=ui_components,
+        )
+
+        estimation = self._build_estimation(
+            project_name=input_data.project_name,
+            description=structured_spec.description or description,
+            features=features,
+            complexity=structured_spec.estimated_complexity,
+            template=input_data.template,
+        )
+
+        if estimation:
+            estimation.ensure_csv()
+
         self.logger.info(
             "spec_analysis.completed",
             features_count=len(features),
             models_count=len(data_models),
             endpoints_count=len(api_endpoints),
             questions_count=len(clarification_questions),
+            estimation_total=estimation.grand_total() if estimation else None,
         )
 
         return SpecAnalysisOutput(
             structured_spec=structured_spec,
+            estimation=estimation,
             clarification_questions=clarification_questions,
             needs_clarification=len(clarification_questions) > 0,
         )
@@ -289,6 +315,124 @@ Always output valid JSON matching the StructuredSpec schema.
             return "medium"
         else:
             return "simple"
+
+    def _build_estimation(
+        self,
+        project_name: str,
+        description: str,
+        features: list[Feature],
+        complexity: Literal["simple", "medium", "complex"],
+        template: SpecTemplate | None = None,
+    ) -> EstimationResult | None:
+        """Create an estimation breakdown using features and optional template context."""
+        base_hours = template.estimated_hours_baseline if template else None
+        base_hours = base_hours or 10.0
+        base_hours = max(base_hours, 6.0)
+
+        complexity_factor = {
+            "simple": 0.9,
+            "medium": 1.0,
+            "complex": 1.2,
+        }[complexity]
+
+        rows: list[EstimationRow] = []
+        sequence = 1
+
+        foundation_hours = round(base_hours * 0.65, 1)
+        rows.append(
+            EstimationRow(
+                number=sequence,
+                area="Foundation",
+                task="Project setup, repository bootstrapping, CI scaffold, environments",
+                estimated_hours=foundation_hours,
+                notes="Baseline setup influenced by template baseline hours" if template else "Baseline setup",
+            )
+        )
+        sequence += 1
+
+        for feature in features:
+            hours = self._estimate_feature_hours(
+                feature=feature,
+                base_hours=base_hours,
+                complexity_factor=complexity_factor,
+            )
+            rows.append(
+                EstimationRow(
+                    number=sequence,
+                    area=feature.name,
+                    task=feature.description or feature.name,
+                    estimated_hours=hours,
+                    optional=feature.priority in ("could", "wont"),
+                    notes="Estimated using template effort style" if template else "Heuristic estimate",
+                    feature_id=feature.id,
+                )
+            )
+            sequence += 1
+
+        feature_hours = sum(r.estimated_hours for r in rows if r.area != "Foundation")
+        qa_hours = round(max(4.0, feature_hours * 0.18), 1)
+        rows.append(
+            EstimationRow(
+                number=sequence,
+                area="Quality",
+                task="QA, UAT support, regression passes",
+                estimated_hours=qa_hours,
+                notes="Includes regression on main user journeys",
+            )
+        )
+        sequence += 1
+
+        deploy_hours = round(max(3.0, feature_hours * 0.1), 1)
+        rows.append(
+            EstimationRow(
+                number=sequence,
+                area="Release",
+                task="Staging hardening, deployment, smoke tests, handover",
+                estimated_hours=deploy_hours,
+                notes="Covers staging + production promotion",
+            )
+        )
+        sequence += 1
+
+        total_hours = round(sum(r.estimated_hours for r in rows), 2)
+        buffer_hours = round(max(2.0, total_hours * 0.1), 2)
+
+        estimation = EstimationResult(
+            template_id=template.id if template else None,
+            rows=rows,
+            total_hours=total_hours,
+            buffer_hours=buffer_hours,
+            summary=f"Estimation for {project_name}: {len(features)} feature(s), {complexity} complexity.",
+            metadata={
+                "base_hours": base_hours,
+                "complexity_factor": complexity_factor,
+                "template_name": template.name if template else None,
+                "description": description,
+            },
+        )
+
+        return estimation
+
+    def _estimate_feature_hours(
+        self,
+        feature: Feature,
+        base_hours: float,
+        complexity_factor: float,
+    ) -> float:
+        """Estimate hours for a single feature."""
+        priority_factor = {
+            "must": 1.1,
+            "should": 1.0,
+            "could": 0.7,
+            "wont": 0.4,
+        }.get(feature.priority, 1.0)
+
+        risk_keywords = ["payment", "auth", "oauth", "real-time", "export", "analytics"]
+        risk_factor = 1.0
+        if any(kw in feature.name.lower() or kw in feature.description.lower() for kw in risk_keywords):
+            risk_factor += 0.2
+
+        return round(max(2.0, base_hours * priority_factor * complexity_factor * risk_factor), 1)
 
     def _should_enhance_with_ai(self, spec: StructuredSpec) -> bool:
         """Determine if we should use Claude to enhance the analysis."""

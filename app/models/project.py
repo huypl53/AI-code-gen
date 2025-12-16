@@ -71,8 +71,9 @@ class ProjectCreate(BaseModel):
     """Request model for creating a new project."""
 
     name: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")
-    spec_format: Literal["markdown", "csv"]
+    spec_format: Literal["markdown", "csv", "text"]
     spec_content: str = Field(..., min_length=10)
+    template_id: UUID | None = None
     options: ProjectOptions = Field(default_factory=ProjectOptions)
 
 
@@ -89,8 +90,9 @@ class Project(BaseModel):
     completed_at: datetime | None = None
 
     # Input
-    spec_format: Literal["markdown", "csv"]
+    spec_format: Literal["markdown", "csv", "text"]
     spec_content: str
+    template_id: UUID | None = None
     options: ProjectOptions
 
     # Processing state
@@ -102,6 +104,7 @@ class Project(BaseModel):
 
     # Results (stored as dicts to avoid circular imports)
     structured_spec: dict[str, Any] | None = None
+    estimation: dict[str, Any] | None = None
     generated_project: dict[str, Any] | None = None
     deployment_result: dict[str, Any] | None = None
 
@@ -161,6 +164,8 @@ class ProjectResponse(BaseModel):
     # Results
     result: dict[str, Any] | None = None
     error: str | None = None
+    estimation: dict[str, Any] | None = None
+    template_id: UUID | None = None
 
     # Clarification state
     pending_clarifications: int = 0
@@ -190,5 +195,7 @@ class ProjectResponse(BaseModel):
             phases=project.phases,
             result=result,
             error=project.error,
+            estimation=project.estimation,
+            template_id=project.template_id,
             pending_clarifications=pending_clarifications,
         )

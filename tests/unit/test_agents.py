@@ -78,6 +78,22 @@ class TestSpecAnalysisAgent:
         assert result.needs_clarification is True
 
     @pytest.mark.asyncio
+    async def test_generates_estimation(
+        self, agent: SpecAnalysisAgent, sample_markdown_spec: str
+    ):
+        """Agent should emit estimation breakdown and CSV."""
+        input_data = SpecAnalysisInput(
+            spec_format="markdown",
+            spec_content=sample_markdown_spec,
+            project_name="estimate-app",
+        )
+
+        result = await agent.execute(input_data)
+
+        assert result.estimation is not None
+        assert result.estimation.csv
+
+    @pytest.mark.asyncio
     async def test_estimates_complexity_simple(self, agent: SpecAnalysisAgent):
         """Test complexity estimation for simple spec."""
         simple_spec = """# Simple App

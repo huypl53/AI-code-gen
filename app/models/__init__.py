@@ -1,5 +1,14 @@
 """Data models for App-Agent."""
 
+from app.models.deployment import (
+    DeploymentInput,
+    DeploymentResult,
+)
+from app.models.generation import (
+    CodeGenOptions,
+    GeneratedFile,
+    GeneratedProject,
+)
 from app.models.project import (
     ClarificationQuestion,
     PhaseInfo,
@@ -9,6 +18,13 @@ from app.models.project import (
     ProjectOptions,
     ProjectResponse,
     ProjectStatus,
+)
+from app.models.project_template import (
+    ProjectTemplate,
+    ProjectTemplateCreate,
+    ProjectTemplateResponse,
+    TechStack,
+    TemplateMatch,
 )
 from app.models.spec import (
     APIEndpoint,
@@ -20,15 +36,6 @@ from app.models.spec import (
     StructuredSpec,
     TechRecommendations,
     UIComponent,
-)
-from app.models.generation import (
-    CodeGenOptions,
-    GeneratedFile,
-    GeneratedProject,
-)
-from app.models.deployment import (
-    DeploymentInput,
-    DeploymentResult,
 )
 
 __all__ = [
@@ -58,4 +65,10 @@ __all__ = [
     # Deployment models
     "DeploymentInput",
     "DeploymentResult",
+    # Project template models
+    "ProjectTemplate",
+    "ProjectTemplateCreate",
+    "ProjectTemplateResponse",
+    "TechStack",
+    "TemplateMatch",
 ]

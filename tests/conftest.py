@@ -4,6 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.session import SessionManager, get_session_manager
+from app.core.templates import get_template_manager
 from app.main import app
 
 
@@ -19,6 +20,8 @@ async def client() -> AsyncClient:
     # Reset the session manager for each test
     manager = get_session_manager()
     manager._projects.clear()
+    template_manager = get_template_manager()
+    template_manager.clear()
     
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -26,6 +29,7 @@ async def client() -> AsyncClient:
     
     # Cleanup after test
     manager._projects.clear()
+    template_manager.clear()
 
 
 @pytest.fixture

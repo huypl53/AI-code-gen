@@ -2,19 +2,31 @@
 
 Generates complete, production-ready application code from structured specifications.
 Uses claude-agent-sdk to leverage Claude's code generation capabilities.
+
+Supports template-first generation for cost optimization:
+1. Try to match spec to existing project templates
+2. If match found, copy template and customize with Claude
+3. If no match, fall back to full Claude generation
 """
 
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
 from app.config import settings
 from app.models.generation import CodeGenOptions, GeneratedFile, GeneratedProject
+from app.models.project_template import TemplateMatch
 from app.models.spec import StructuredSpec
+
+if TYPE_CHECKING:
+    from app.services.template_service import TemplateService
+
+# Similarity threshold for template matching
+TEMPLATE_SIMILARITY_THRESHOLD = 0.7
 
 
 class CodingAgentInput(BaseModel):
@@ -35,14 +47,38 @@ class CodingAgentOutput(BaseModel):
 
 class CodingAgent(BaseAgent[CodingAgentInput, CodingAgentOutput]):
     """Agent for generating application code from specifications.
-    
-    This agent:
+
+    This agent supports template-first generation for cost optimization:
+    1. Try to match spec to existing project templates (embedding similarity)
+    2. If match found, copy template and customize with Claude (cheap)
+    3. If no match, fall back to full Claude generation (expensive)
+
+    Generation steps:
     1. Analyzes the structured specification
     2. Creates project structure
     3. Generates all source code files
     4. Creates configuration files
     5. Generates tests
     """
+
+    def __init__(self, template_service: "TemplateService | None" = None):
+        """Initialize the coding agent.
+
+        Args:
+            template_service: Optional template service for template-first generation.
+                            If not provided, will be created on first use.
+        """
+        super().__init__()
+        self._template_service = template_service
+
+    @property
+    def template_service(self) -> "TemplateService":
+        """Get the template service (lazy initialization)."""
+        if self._template_service is None:
+            from app.services.template_service import get_template_service
+
+            self._template_service = get_template_service()
+        return self._template_service
 
     @property
     def name(self) -> str:
@@ -131,7 +167,14 @@ class CodingAgent(BaseAgent[CodingAgentInput, CodingAgentOutput]):
         return "claude-sonnet-4-5-20250929"  # Use most capable model for code generation
 
     async def execute(self, input_data: CodingAgentInput) -> CodingAgentOutput:
-        """Execute code generation."""
+        """Execute code generation with template-first strategy.
+
+        Generation strategy:
+        1. If API key available, try to match spec to existing templates
+        2. If template match found with high similarity, copy and customize (cost-optimized)
+        3. If no match, fall back to full Claude generation
+        4. If no API key, use basic template generation
+        """
         self.logger.info(
             "coding_agent.started",
             project=input_data.spec.project_name,
@@ -146,15 +189,39 @@ class CodingAgent(BaseAgent[CodingAgentInput, CodingAgentOutput]):
             output_dir = Path(tempfile.mkdtemp(prefix="appagent_"))
 
         try:
-            # Use Claude-based generation for intelligent code creation
-            # Falls back to templates if Claude SDK is not available
             if settings.anthropic_api_key:
-                project = await self._generate_with_claude(
-                    spec=input_data.spec,
-                    options=input_data.options,
-                    output_dir=output_dir,
-                )
+                # STEP 1: Try template-based generation (cost-optimized path)
+                template_match = await self._try_template_match(input_data.spec)
+
+                if template_match:
+                    self.logger.info(
+                        "coding_agent.using_template",
+                        template=template_match.template.name,
+                        similarity=round(template_match.similarity_score, 3),
+                        matched_features=len(template_match.matched_features),
+                        missing_features=len(template_match.missing_features),
+                    )
+
+                    # Cost-optimized: copy template + customize with Claude
+                    project = await self._generate_from_template_with_customization(
+                        spec=input_data.spec,
+                        options=input_data.options,
+                        output_dir=output_dir,
+                        template_match=template_match,
+                    )
+                else:
+                    # No template match - use full Claude generation
+                    self.logger.info(
+                        "coding_agent.no_template_match",
+                        reason="No suitable template found above threshold",
+                    )
+                    project = await self._generate_with_claude(
+                        spec=input_data.spec,
+                        options=input_data.options,
+                        output_dir=output_dir,
+                    )
             else:
+                # No API key - use basic template generation
                 self.logger.warning(
                     "coding_agent.fallback_to_templates",
                     reason="ANTHROPIC_API_KEY not set",
@@ -229,39 +296,64 @@ class CodingAgent(BaseAgent[CodingAgentInput, CodingAgentOutput]):
         tool_uses = 0
         files_written = 0
 
+        # Track if generation resulted in error
+        generation_error: str | None = None
+
         # Use the simpler query() function for one-off generation
-        async for message in query(prompt=prompt, options=agent_options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, ToolUseBlock):
-                        tool_uses += 1
-                        if block.name == "Write":
-                            files_written += 1
-                            file_path = block.input.get("file_path", "unknown")
-                            self.logger.info(
-                                "coding_agent.writing_file",
-                                file_path=file_path,
-                            )
-                        elif block.name in ["Edit", "Bash"]:
-                            self.logger.info(
-                                "coding_agent.tool_use",
-                                tool=block.name,
-                            )
-            elif isinstance(message, ResultMessage):
-                self.logger.info(
-                    "coding_agent.generation_result",
-                    is_error=message.is_error,
-                    num_turns=message.num_turns,
-                    duration_ms=message.duration_ms,
-                    tool_uses=tool_uses,
-                    files_written=files_written,
-                )
-                # Log stderr if there was an error
-                if message.is_error and stderr_output:
-                    self.logger.error(
-                        "coding_agent.stderr_output",
-                        stderr="\n".join(stderr_output[-20:]),  # Last 20 lines
+        try:
+            async for message in query(prompt=prompt, options=agent_options):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, ToolUseBlock):
+                            tool_uses += 1
+                            if block.name == "Write":
+                                files_written += 1
+                                file_path = block.input.get("file_path", "unknown")
+                                self.logger.info(
+                                    "coding_agent.writing_file",
+                                    file_path=file_path,
+                                )
+                            elif block.name in ["Edit", "Bash"]:
+                                self.logger.info(
+                                    "coding_agent.tool_use",
+                                    tool=block.name,
+                                )
+                elif isinstance(message, ResultMessage):
+                    self.logger.info(
+                        "coding_agent.generation_result",
+                        is_error=message.is_error,
+                        num_turns=message.num_turns,
+                        duration_ms=message.duration_ms,
+                        tool_uses=tool_uses,
+                        files_written=files_written,
                     )
+                    # Always log stderr for debugging
+                    if stderr_output:
+                        log_level = "error" if message.is_error else "debug"
+                        getattr(self.logger, log_level)(
+                            "coding_agent.stderr_output",
+                            stderr="\n".join(stderr_output[-30:]),
+                        )
+                    elif message.is_error:
+                        self.logger.warning(
+                            "coding_agent.no_stderr_captured",
+                            hint="Enable DEBUG logging to see more details",
+                        )
+                    # Track error for later
+                    if message.is_error:
+                        generation_error = f"Claude generation failed after {message.num_turns} turns"
+        except Exception as e:
+            # Capture exception from query() itself
+            self.logger.error(
+                "coding_agent.query_exception",
+                error=str(e),
+                stderr="\n".join(stderr_output[-30:]) if stderr_output else "No stderr captured",
+            )
+            raise RuntimeError(f"Claude agent SDK error: {e}") from e
+
+        # If generation failed, raise an exception
+        if generation_error:
+            raise RuntimeError(generation_error)
 
         # Detect the actual project directory
         # Sometimes Claude creates a subdirectory with the project name
@@ -333,6 +425,280 @@ class CodingAgent(BaseAgent[CodingAgentInput, CodingAgentOutput]):
         )
 
         return await generator.generate()
+
+    async def _try_template_match(
+        self, spec: StructuredSpec
+    ) -> TemplateMatch | None:
+        """Try to find a matching template for the spec.
+
+        Args:
+            spec: The structured specification
+
+        Returns:
+            TemplateMatch if a suitable template is found, None otherwise
+        """
+        try:
+            return await self.template_service.find_matching_template(
+                spec=spec,
+                threshold=TEMPLATE_SIMILARITY_THRESHOLD,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "coding_agent.template_match_error",
+                error=str(e),
+            )
+            return None
+
+    async def _generate_from_template_with_customization(
+        self,
+        spec: StructuredSpec,
+        options: CodeGenOptions,
+        output_dir: Path,
+        template_match: TemplateMatch,
+    ) -> GeneratedProject:
+        """Generate project by copying template and customizing with Claude.
+
+        This is the cost-optimized path that:
+        1. Copies the template files to output directory
+        2. Uses Claude to customize based on spec differences
+
+        Args:
+            spec: The structured specification
+            options: Code generation options
+            output_dir: Output directory for the project
+            template_match: The matched template with similarity info
+
+        Returns:
+            GeneratedProject with all files
+        """
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ResultMessage,
+            ToolUseBlock,
+            query,
+        )
+
+        # Step 1: Copy template to output directory
+        files = await self.template_service.copy_template_to_directory(
+            template=template_match.template,
+            output_dir=output_dir,
+        )
+
+        self.logger.info(
+            "coding_agent.template_copied",
+            template=template_match.template.name,
+            files_count=len(files),
+        )
+
+        # Step 2: Use Claude to customize the template
+        customization_prompt = self._build_customization_prompt(
+            spec=spec,
+            options=options,
+            template_match=template_match,
+        )
+
+        # Capture stderr for debugging
+        stderr_output: list[str] = []
+
+        def capture_stderr(line: str) -> None:
+            stderr_output.append(line)
+            self.logger.debug("coding_agent.customization_stderr", line=line)
+
+        agent_options = ClaudeAgentOptions(
+            system_prompt=self._get_customization_system_prompt(),
+            allowed_tools=self.tools,
+            permission_mode="acceptEdits",
+            cwd=str(output_dir),
+            model=self.model,
+            stderr=capture_stderr,
+            env=(
+                {"ANTHROPIC_API_KEY": settings.anthropic_api_key}
+                if settings.anthropic_api_key
+                else {}
+            ),
+        )
+
+        self.logger.info(
+            "coding_agent.customizing_template",
+            template=template_match.template.name,
+            missing_features=template_match.missing_features,
+        )
+
+        # Track modifications
+        tool_uses = 0
+        files_created = 0
+        files_edited = 0
+        customization_error: str | None = None
+
+        try:
+            async for message in query(prompt=customization_prompt, options=agent_options):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, ToolUseBlock):
+                            tool_uses += 1
+                            if block.name == "Write":
+                                files_created += 1
+                                file_path = block.input.get("file_path", "unknown")
+                                self.logger.info(
+                                    "coding_agent.customization_write",
+                                    file_path=file_path,
+                                )
+                            elif block.name == "Edit":
+                                files_edited += 1
+                                file_path = block.input.get("file_path", "unknown")
+                                self.logger.info(
+                                    "coding_agent.customization_edit",
+                                    file_path=file_path,
+                                )
+                elif isinstance(message, ResultMessage):
+                    self.logger.info(
+                        "coding_agent.customization_complete",
+                        is_error=message.is_error,
+                        num_turns=message.num_turns,
+                        duration_ms=message.duration_ms,
+                        tool_uses=tool_uses,
+                        files_created=files_created,
+                        files_edited=files_edited,
+                    )
+                    if stderr_output:
+                        log_level = "error" if message.is_error else "debug"
+                        getattr(self.logger, log_level)(
+                            "coding_agent.customization_stderr",
+                            stderr="\n".join(stderr_output[-30:]),
+                        )
+                    if message.is_error:
+                        customization_error = f"Template customization failed after {message.num_turns} turns"
+        except Exception as e:
+            self.logger.error(
+                "coding_agent.customization_exception",
+                error=str(e),
+                stderr="\n".join(stderr_output[-30:]) if stderr_output else "No stderr",
+            )
+            raise RuntimeError(f"Claude agent SDK error during customization: {e}") from e
+
+        if customization_error:
+            raise RuntimeError(customization_error)
+
+        # Step 3: Scan all files in output directory
+        actual_project_dir = self._find_project_directory(output_dir)
+        final_files = await self._scan_generated_files(actual_project_dir)
+
+        return GeneratedProject(
+            output_directory=str(actual_project_dir),
+            files=final_files,
+            dependencies=self._get_default_dependencies(options),
+            dev_dependencies=self._get_default_dev_dependencies(options),
+        )
+
+    def _get_customization_system_prompt(self) -> str:
+        """Get the system prompt for template customization."""
+        return """You are an expert developer customizing an existing project template.
+
+## Your Task
+You are given a pre-built Next.js project template. Your job is to customize it to match the user's specification.
+
+## What You Can Do
+- Edit existing files to match the specification
+- Add new files for features not in the template
+- Remove or comment out features the user doesn't need
+- Update configuration files as needed
+- Modify component names, content, and styling
+
+## What You Should NOT Do
+- Don't recreate files that already match the specification
+- Don't make unnecessary changes to working code
+- Don't change the fundamental architecture unless required
+
+## Guidelines
+1. First use Glob to see what files exist in the template
+2. Review key files before making changes
+3. Make minimal, targeted edits to achieve the desired result
+4. Preserve working patterns from the template
+5. Ensure imports remain valid after changes
+6. Update tests if you modify functionality
+
+## Code Quality Standards
+- Use TypeScript with strict typing
+- Follow existing code conventions in the template
+- Implement proper error handling
+- Add input validation where needed
+
+Use the Read tool to examine files, Edit tool to modify them, and Write tool only for new files.
+"""
+
+    def _build_customization_prompt(
+        self,
+        spec: StructuredSpec,
+        options: CodeGenOptions,
+        template_match: TemplateMatch,
+    ) -> str:
+        """Build the prompt for template customization."""
+        spec_json = spec.model_dump_json(indent=2)
+
+        matched_str = ", ".join(template_match.matched_features) or "None"
+        missing_str = ", ".join(template_match.missing_features) or "None"
+        extra_str = ", ".join(template_match.extra_features) or "None"
+
+        return f"""Customize this project template to match the following specification.
+
+## Template Information
+- **Template**: {template_match.template.name}
+- **Description**: {template_match.template.description}
+- **Similarity Score**: {template_match.similarity_score:.2f}
+
+## Features Analysis
+- **Features already in template**: {matched_str}
+- **Features to ADD**: {missing_str}
+- **Features in template but not needed** (can ignore or remove): {extra_str}
+
+## Target Specification
+```json
+{spec_json}
+```
+
+## Generation Options
+- Framework: {options.framework}
+- Styling: {options.styling}
+- TypeScript: {options.typescript}
+- Include Tests: {options.include_tests}
+
+## Customization Instructions
+
+### Step 1: Explore the Template
+First, use `Glob` with pattern `**/*` to see what files exist in the template.
+
+### Step 2: Update Project Identity
+1. Update `package.json` with the new project name: "{spec.project_name.lower().replace(' ', '-')}"
+2. Update `README.md` with the new project description
+
+### Step 3: Implement Missing Features
+For each missing feature ({missing_str}):
+1. Create necessary components in `src/components/`
+2. Add required pages in `src/app/`
+3. Create API routes in `src/app/api/` if needed
+4. Add type definitions in `src/types/`
+
+### Step 4: Customize Existing Features
+Review and modify existing components to match the specification:
+- Update UI text and labels
+- Modify styling to match design requirements
+- Adjust data models and API schemas
+
+### Step 5: Clean Up (Optional)
+If extra features are truly not needed, you may:
+- Remove unused components
+- Clean up unused imports
+- Remove unused API routes
+
+## CRITICAL Requirements
+1. **Keep the project buildable** - all imports must be valid
+2. **Preserve TypeScript types** - maintain type safety
+3. **Follow existing patterns** - be consistent with template code style
+4. **Don't break working code** - make targeted changes only
+
+Start by exploring the template files, then make the necessary customizations.
+"""
 
     def _build_generation_prompt(
         self, spec: StructuredSpec, options: CodeGenOptions

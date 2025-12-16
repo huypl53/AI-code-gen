@@ -83,6 +83,12 @@ tmp/
 temp/
 .DS_Store
 
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+app/data/*.db
+
 # Generated projects output
 output/
 generated/

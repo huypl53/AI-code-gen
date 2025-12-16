@@ -48,6 +48,20 @@ class Settings(BaseSettings):
     # Mocking / local demos
     mock_deployed_app: str | None = None  # If set, pipeline returns this URL without hitting external APIs
 
+    # Project Template Settings
+    template_similarity_threshold: float = Field(
+        default=0.7,
+        description="Minimum similarity score for template matching (0.0 to 1.0)",
+    )
+    template_db_path: str = Field(
+        default="app/data/templates.db",
+        description="Path to the SQLite database for template metadata",
+    )
+    templates_directory: str = Field(
+        default="app/generators/templates",
+        description="Directory for storing project templates",
+    )
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""

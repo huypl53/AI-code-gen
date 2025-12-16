@@ -20,6 +20,31 @@ class TestHealthEndpoint:
         assert "timestamp" in data
 
 
+class TestTemplatesEndpoints:
+    """Tests for template management endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_create_and_get_template(self, client: AsyncClient):
+        response = await client.post(
+            "/v1/templates",
+            json={
+                "name": "base-template",
+                "csv_content": "No,Task,Hours\n1,Setup,8\n2,Feature,12",
+                "is_default": True,
+            },
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        template_id = data["id"]
+
+        get_response = await client.get(f"/v1/templates/{template_id}")
+        assert get_response.status_code == 200
+        fetched = get_response.json()
+        assert fetched["id"] == template_id
+        assert fetched["is_default"] is True
+
+
 class TestProjectsEndpoints:
     """Tests for project management endpoints."""
 
@@ -61,6 +86,32 @@ class TestProjectsEndpoints:
         assert response.status_code == 202
         data = response.json()
         assert data["name"] == "custom-app"
+
+    @pytest.mark.asyncio
+    async def test_create_project_uses_default_template(self, client: AsyncClient):
+        """Project creation should attach default template when available."""
+        template_response = await client.post(
+            "/v1/templates",
+            json={
+                "name": "auto-default",
+                "csv_content": "No,Task,Hours\n1,Setup,6\n2,Feature,10",
+                "is_default": True,
+            },
+        )
+        template_id = template_response.json()["id"]
+
+        response = await client.post(
+            "/v1/projects",
+            json={
+                "name": "templated-app",
+                "spec_format": "markdown",
+                "spec_content": "# Templated\n\n## Features\n- Item",
+            },
+        )
+
+        assert response.status_code == 202
+        data = response.json()
+        assert data["template_id"] == template_id
 
     @pytest.mark.asyncio
     async def test_create_project_invalid_name(self, client: AsyncClient):

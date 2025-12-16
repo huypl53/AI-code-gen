@@ -24,6 +24,7 @@ class SessionManager:
             name=data.name,
             spec_format=data.spec_format,
             spec_content=data.spec_content,
+            template_id=data.template_id,
             options=data.options,
         )
         self._projects[project.id] = project

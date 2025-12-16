@@ -17,6 +17,7 @@ from app.config import settings
 from app.core.events import EventBus, get_event_bus
 from app.core.exceptions import AgentExecutionError
 from app.core.session import SessionManager, get_session_manager
+from app.core.templates import TemplateManager, get_template_manager
 from app.models.generation import CodeGenOptions
 from app.models.project import PhaseStatus, Project, ProjectStatus
 from app.models.spec import StructuredSpec
@@ -45,9 +46,11 @@ class PipelineOrchestrator:
         self,
         session: SessionManager | None = None,
         events: EventBus | None = None,
+        template_manager: TemplateManager | None = None,
     ):
         self.session = session or get_session_manager()
         self.events = events or get_event_bus()
+        self.template_manager = template_manager or get_template_manager()
         self.logger = get_logger("orchestrator")
 
         # Initialize agents
@@ -140,16 +143,31 @@ class PipelineOrchestrator:
         await self.events.publish_phase_started(project.id, phase)
 
         try:
+            template = None
+            if project.template_id:
+                template = await self.template_manager.get_template(project.template_id)
+                if not template:
+                    self.logger.warning(
+                        "orchestrator.template_missing",
+                        template_id=str(project.template_id),
+                    )
+            else:
+                template = self.template_manager.get_default()
+
             result = await self.spec_agent.execute(
                 SpecAnalysisInput(
                     spec_format=project.spec_format,
                     spec_content=project.spec_content,
                     project_name=project.name,
+                    template=template,
                 )
             )
 
             # Store structured spec
             project.structured_spec = result.structured_spec.model_dump()
+            if result.estimation:
+                result.estimation.ensure_csv()
+                project.estimation = result.estimation.model_dump()
 
             # Handle clarification questions (only pause if there are required unanswered questions)
             required_unanswered = [

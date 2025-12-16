@@ -89,6 +89,7 @@ A simple test project.
         assert result.structured_spec is not None
         assert "features" in result.structured_spec
         assert len(result.structured_spec["features"]) > 0
+        assert result.estimation is not None
 
     @pytest.mark.asyncio
     async def test_run_pipeline_code_generation(

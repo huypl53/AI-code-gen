@@ -12,6 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.api.deps import EventsDep, ProjectDep, SessionDep
 from app.config import settings
 from app.core.events import Event
+from app.core.templates import get_template_manager
 from app.models.project import (
     ClarificationQuestion,
     PhaseStatus,
@@ -124,6 +125,19 @@ async def create_project(
     background_tasks: BackgroundTasks,
 ) -> ProjectResponse:
     """Create a new project and start processing."""
+    template_manager = get_template_manager()
+    if data.template_id:
+        template = await template_manager.get_template(data.template_id)
+        if not template:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Template not found",
+            )
+    else:
+        default_template = template_manager.get_default()
+        if default_template:
+            data.template_id = default_template.id
+
     # Create project
     project = await session.create_project(data)
 
