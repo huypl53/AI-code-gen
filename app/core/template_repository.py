@@ -9,20 +9,30 @@ from pathlib import Path
 from typing import Iterator
 from uuid import UUID
 
+from app.config import settings
 from app.models.project_template import ProjectTemplate, TechStack
 from app.utils.logging import get_logger
 
 logger = get_logger("template_repository")
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_db_path(db_path: str | Path) -> Path:
+    """Resolve database path relative to project root when not absolute."""
+    path = Path(db_path)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 # Database file path
-DB_PATH = Path(__file__).parent.parent / "data" / "templates.db"
+DB_PATH = _resolve_db_path(settings.template_db_path)
 
 
 class TemplateRepository:
     """Repository for managing project templates in SQLite."""
 
-    def __init__(self, db_path: Path | None = None):
-        self.db_path = db_path or DB_PATH
+    def __init__(self, db_path: Path | str | None = None):
+        self.db_path = _resolve_db_path(db_path or DB_PATH)
         self._ensure_db_exists()
 
     def _ensure_db_exists(self) -> None:

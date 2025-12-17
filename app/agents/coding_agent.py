@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 # Similarity threshold for template matching
 TEMPLATE_SIMILARITY_THRESHOLD = 0.7
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class CodingAgentInput(BaseModel):
@@ -184,9 +185,17 @@ class CodingAgent(BaseAgent[CodingAgentInput, CodingAgentOutput]):
         # Create output directory
         if input_data.output_directory:
             output_dir = Path(input_data.output_directory)
+            if not output_dir.is_absolute():
+                output_dir = PROJECT_ROOT / output_dir
             output_dir.mkdir(parents=True, exist_ok=True)
         else:
-            output_dir = Path(tempfile.mkdtemp(prefix="appagent_"))
+            base_output_dir = Path(settings.generated_projects_dir)
+            if not base_output_dir.is_absolute():
+                base_output_dir = PROJECT_ROOT / base_output_dir
+            base_output_dir.mkdir(parents=True, exist_ok=True)
+            output_dir = Path(
+                tempfile.mkdtemp(prefix="appagent_", dir=str(base_output_dir))
+            )
 
         try:
             if settings.anthropic_api_key:
