@@ -18,3 +18,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    volumes:
+      - ./logs:/app/logs
+      - ./app/data:/app/app/data
+      - ./generated:/app/generated

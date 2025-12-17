@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["console", "json"] = "console"
+    log_directory: str = Field(
+        default="logs",
+        description="Directory for persistent application logs",
+    )
+    log_file_name: str = Field(
+        default="app.log",
+        description="Log file name within the log directory",
+    )
 
     # Mocking / local demos
     mock_deployed_app: str | None = None  # If set, pipeline returns this URL without hitting external APIs
@@ -60,6 +68,10 @@ class Settings(BaseSettings):
     templates_directory: str = Field(
         default="app/generators/templates",
         description="Directory for storing project templates",
+    )
+    generated_projects_dir: str = Field(
+        default="generated",
+        description="Base directory for generated projects output",
     )
 
     @property
