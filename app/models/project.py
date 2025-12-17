@@ -2,10 +2,12 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+from app.models.spec import StructuredSpec
 
 
 class ProjectStatus(str, Enum):
@@ -169,6 +171,7 @@ class ProjectResponse(BaseModel):
 
     # Clarification state
     pending_clarifications: int = 0
+    specs: Optional[dict[str, Any]] = Field(default=None)
 
     @classmethod
     def from_project(cls, project: Project) -> "ProjectResponse":
@@ -198,4 +201,5 @@ class ProjectResponse(BaseModel):
             estimation=project.estimation,
             template_id=project.template_id,
             pending_clarifications=pending_clarifications,
+            specs=project.structured_spec
         )

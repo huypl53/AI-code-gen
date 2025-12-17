@@ -94,11 +94,13 @@ Quality standards:
 
     @property
     def tools(self) -> list[str]:
-        return ["Read", "Grep", "Glob"]
+        # return ["Read", "Grep", "Glob"]
+        return []
 
     @property
     def model(self) -> str:
-        return "claude-sonnet-4-5-20250929"
+        return "claude-opus-4-5"
+        # return "claude-sonnet-4-5-20250929"
 
     async def execute(self, input_data: SpecAnalysisInput) -> SpecAnalysisOutput:
         """Execute specification analysis.

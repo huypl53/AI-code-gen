@@ -154,7 +154,7 @@ class PipelineOrchestrator:
             else:
                 template = self.template_manager.get_default()
 
-            result = await self.spec_agent.execute(
+            spec_result = await self.spec_agent.execute(
                 SpecAnalysisInput(
                     spec_format=project.spec_format,
                     spec_content=project.spec_content,
@@ -164,19 +164,19 @@ class PipelineOrchestrator:
             )
 
             # Store structured spec
-            project.structured_spec = result.structured_spec.model_dump()
-            if result.estimation:
-                result.estimation.ensure_csv()
-                project.estimation = result.estimation.model_dump()
+            project.structured_spec = spec_result.structured_spec.model_dump()
+            if spec_result.estimation:
+                spec_result.estimation.ensure_csv()
+                project.estimation = spec_result.estimation.model_dump()
 
             # Handle clarification questions (only pause if there are required unanswered questions)
             required_unanswered = [
-                q for q in result.clarification_questions
+                q for q in spec_result.clarification_questions
                 if q.required and not q.answered
             ]
             
             if required_unanswered:
-                project.clarification_questions = result.clarification_questions
+                project.clarification_questions = spec_result.clarification_questions
                 project.status = ProjectStatus.CLARIFYING
                 project.update_phase(
                     phase,
@@ -188,8 +188,8 @@ class PipelineOrchestrator:
                     phase,
                     PhaseStatus.COMPLETED,
                     metadata={
-                        "features_count": len(result.structured_spec.features),
-                        "models_count": len(result.structured_spec.data_models),
+                        "features_count": len(spec_result.structured_spec.features),
+                        "models_count": len(spec_result.structured_spec.data_models),
                     },
                 )
 
